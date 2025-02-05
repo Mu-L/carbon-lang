@@ -10,10 +10,11 @@
 #include "common/check.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/Support/ConvertUTF.h"
 
 namespace Carbon {
 
-static constexpr llvm::StringRef TripleQuotes = R"(""")";
+static constexpr llvm::StringRef TripleQuotes = "'''";
 static constexpr llvm::StringRef HorizontalWhitespaceChars = " \t";
 
 // Carbon only takes uppercase hex input.
@@ -37,7 +38,7 @@ auto UnescapeStringLiteral(llvm::StringRef source, const int hashtag_num,
   while (i < source.size()) {
     char c = source[i];
     if (i + hashtag_num < source.size() &&
-        source.slice(i, i + hashtag_num + 1).equals(escape)) {
+        source.slice(i, i + hashtag_num + 1) == escape) {
       i += hashtag_num + 1;
       if (i == source.size()) {
         return std::nullopt;
@@ -81,8 +82,40 @@ auto UnescapeStringLiteral(llvm::StringRef source, const int hashtag_num,
           ret.push_back(16 * *c1 + *c2);
           break;
         }
-        case 'u':
-          CARBON_FATAL() << "\\u is not yet supported in string literals";
+        case 'u': {
+          ++i;
+          if (i >= source.size() || source[i] != '{') {
+            return std::nullopt;
+          }
+          unsigned int unicode_int = 0;
+          ++i;
+          int original_i = i;
+          while (i < source.size() && source[i] != '}') {
+            std::optional<char> hex_val = FromHex(source[i]);
+            if (hex_val == std::nullopt) {
+              return std::nullopt;
+            }
+            unicode_int = unicode_int << 4;
+            unicode_int += hex_val.value();
+            ++i;
+            if (i - original_i > 8) {
+              return std::nullopt;
+            }
+          }
+          if (i >= source.size()) {
+            return std::nullopt;
+          }
+          if (i - original_i == 0) {
+            return std::nullopt;
+          }
+          char utf8_buf[4];
+          char* utf8_end = &utf8_buf[0];
+          if (!llvm::ConvertCodePointToUTF8(unicode_int, utf8_end)) {
+            return std::nullopt;
+          }
+          ret.append(utf8_buf, utf8_end - utf8_buf);
+          break;
+        }
         case '\n':
           if (!is_block_string) {
             return std::nullopt;
@@ -164,7 +197,7 @@ auto ParseBlockStringLiteral(llvm::StringRef source, const int hashtag_num)
 }
 
 auto StringRefContainsPointer(llvm::StringRef ref, const char* ptr) -> bool {
-  auto le = std::less_equal<const char*>();
+  auto le = std::less_equal<>();
   return le(ref.begin(), ptr) && le(ptr, ref.end());
 }
 
